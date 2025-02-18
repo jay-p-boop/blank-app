@@ -9,11 +9,13 @@ st.set_page_config(page_title="Token Historical Prices", layout="wide")
 st.title("Token Historical Prices in USD & EUR")
 st.markdown(
     """
-    Diese Webapp ruft für einen angegebenen Token (über Contract-Adresse) auf Ethereum bzw. unterstützten L2 Chains historische Preisdaten (USD) von CoinGecko ab, holt dazu den historischen USD/EUR-Kurs von exchangerate.host und berechnet den Tokenpreis in EUR. Alle Daten des gewählten Jahres werden als Tabelle angezeigt und können als CSV heruntergeladen werden.
+    Diese Webapp ruft für einen angegebenen Token (über Contract-Adresse) auf Ethereum bzw. unterstützten L2 Chains historische Preisdaten (USD) von CoinGecko ab,
+    holt dazu den historischen USD/EUR-Kurs von exchangerate.host und berechnet den Tokenpreis in EUR. Alle Daten des gewählten Jahres werden als Tabelle angezeigt
+    und können als CSV heruntergeladen werden.
     """
 )
 
-# Mapping der zu unterstützenden Chains zu den entsprechenden CoinGecko-IDs
+# Mapping der unterstützten Chains zu den entsprechenden CoinGecko-IDs
 chain_mapping = {
     "Ethereum": "ethereum",
     "Arbitrum": "arbitrum-one",
@@ -27,8 +29,9 @@ with st.sidebar:
     year = st.number_input("Jahr (vollständig)", min_value=2000, max_value=2100, value=datetime.now().year, step=1)
     fetch_button = st.button("Daten abrufen")
 
-# Caching der API-Aufrufe (ohne TTL, da st.experimental_memo nicht verfügbar ist)
-@st.cache(show_spinner=False)
+# Caching der API-Aufrufe mit st.cache_data
+
+@st.cache_data(ttl=3600)
 def fetch_token_info(chain_id: str, contract_addr: str):
     """
     Ruft Token-Informationen von CoinGecko anhand der Contract-Adresse ab.
@@ -39,7 +42,7 @@ def fetch_token_info(chain_id: str, contract_addr: str):
         raise Exception("Fehler beim Abruf der Token-Informationen. Stelle sicher, dass die Contract-Adresse und die Chain korrekt sind.")
     return response.json()
 
-@st.cache(show_spinner=False)
+@st.cache_data(ttl=3600)
 def fetch_market_chart(coin_id: str, from_ts: int, to_ts: int):
     """
     Ruft historische Preisdaten von CoinGecko (in USD) für den angegebenen Zeitraum ab.
@@ -55,7 +58,7 @@ def fetch_market_chart(coin_id: str, from_ts: int, to_ts: int):
         raise Exception("Fehler beim Abruf der Preisdaten.")
     return response.json()
 
-@st.cache(show_spinner=False)
+@st.cache_data(ttl=86400)
 def fetch_exchange_rate(date_str: str):
     """
     Ruft den historischen USD/EUR Wechselkurs für ein bestimmtes Datum von exchangerate.host ab.
@@ -91,7 +94,7 @@ if fetch_button:
                 st.error("Es wurden keine Preisdaten gefunden.")
             else:
                 # Organisiere die Preisdaten jeweils pro Tag
-                daily_points = {}  # key: 'YYYY-MM-DD', value: list of tuples (datetime, price)
+                daily_points = {}
                 for point in market_data["prices"]:
                     ts, price = point
                     dt_obj = datetime.utcfromtimestamp(ts / 1000)
