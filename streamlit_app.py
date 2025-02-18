@@ -34,7 +34,7 @@ with st.sidebar:
     st.markdown("### API Keys (optional)")
     coin_gecko_api_key = st.text_input(
         "CoinGecko API Key", type="password",
-        help="Optional: Falls du einen eigenen API Key hast."
+        help="Optional: Falls du einen eigenen Pro API Key hast, wird der Pro-Endpunkt genutzt."
     ).strip()
     exchange_rate_api_key = st.text_input(
         "ExchangeRate API Key", type="password",
@@ -45,16 +45,26 @@ with st.sidebar:
 
 # Caching der API-Aufrufe mit st.cache_data
 
+def get_coingecko_base_url(api_key: str = None):
+    """
+    Gibt die Basis-URL zurück. Wird ein API Key übergeben, nutzen wir den Pro-Endpunkt.
+    """
+    if api_key:
+        return "https://pro-api.coingecko.com/api/v3"
+    else:
+        return "https://api.coingecko.com/api/v3"
+
 @st.cache_data(ttl=3600)
 def fetch_token_info(chain_id: str, contract_addr: str, api_key: str = None):
     """
     Ruft Token-Informationen von CoinGecko anhand der Contract-Adresse ab.
-    Falls ein API Key übergeben wird, wird er in den Headern mitgesendet.
+    Wird ein API Key übergeben, verwenden wir den Pro-Endpunkt.
     """
-    url = f"https://api.coingecko.com/api/v3/coins/{chain_id}/contract/{contract_addr}?localization=false"
+    base_url = get_coingecko_base_url(api_key)
+    url = f"{base_url}/coins/{chain_id}/contract/{contract_addr}?localization=false"
     headers = {}
     if api_key:
-        headers["x-cg-pro-api-key"] = api_key  # Für CoinGecko Pro. Falls du einen freien Account nutzt, kannst du den Key auch leer lassen.
+        headers["x-cg-pro-api-key"] = api_key
     response = requests.get(url, headers=headers)
     if response.status_code != 200:
         raise Exception(
@@ -70,7 +80,8 @@ def fetch_market_chart(coin_id: str, from_ts: int, to_ts: int, api_key: str = No
     Ruft historische Preisdaten von CoinGecko (in USD) für den angegebenen Zeitraum ab.
     Optional kann ein API Key übergeben werden.
     """
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart/range"
+    base_url = get_coingecko_base_url(api_key)
+    url = f"{base_url}/coins/{coin_id}/market_chart/range"
     params = {
         "vs_currency": "usd",
         "from": from_ts,
