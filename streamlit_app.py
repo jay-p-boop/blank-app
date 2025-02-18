@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime, timedelta, date, timezone, time
+from datetime import datetime, timedelta, date, timezone
 
 # Seitenkonfiguration
 st.set_page_config(page_title="Token Historical Prices", layout="wide")
@@ -9,19 +9,20 @@ st.set_page_config(page_title="Token Historical Prices", layout="wide")
 st.title("Token Historical Prices in USD & EUR")
 st.markdown(
     """
-    Diese Webapp ruft für einen angegebenen Token (über Contract-Adresse) auf Ethereum bzw. unterstützten L2 Chains historische Preisdaten (USD) von CoinGecko ab,
-    holt dazu den historischen USD/EUR-Kurs von exchangerate.host und berechnet den Tokenpreis in EUR.
+    Diese Webapp ruft für einen angegebenen Token (über Contract-Adresse) auf einer unterstützten Chain (Ethereum, Arbitrum, Optimism)
+    historische Preisdaten (USD) von CoinMarketCap ab, holt dazu den historischen USD/EUR-Kurs von exchangerate.host 
+    und berechnet den Tokenpreis in EUR.
 
-    Zusätzlich kannst du hier optionale API Keys eingeben, falls du eigene Keys für die verwendeten APIs besitzt.
-
+    Zusätzlich kannst du hier deine API Keys eingeben – weshalb dein CoinMarketCap API Key (Pro) verwendet wird.
+    
     Alle Daten des gewählten Jahres werden als Tabelle angezeigt und können als CSV heruntergeladen werden.
     """
 )
 
-# Mapping der unterstützten Chains zu den entsprechenden CoinGecko-IDs
+# Mapping der unterstützen Chains (Plattformen) – ggf. anpassen, falls die Bezeichnungen in CoinMarketCap anders lauten
 chain_mapping = {
     "Ethereum": "ethereum",
-    "Arbitrum": "arbitrum-one",
+    "Arbitrum": "arbitrum",
     "Optimism": "optimism"
 }
 
@@ -32,68 +33,55 @@ with st.sidebar:
     year = st.number_input("Jahr (vollständig)", min_value=2000, max_value=2100, value=datetime.now().year, step=1)
     
     st.markdown("### API Keys (optional)")
-    coin_gecko_api_key = st.text_input(
-        "CoinGecko API Key", type="password",
-        help="Optional: Falls du einen eigenen Pro API Key hast, wird der Pro-Endpunkt genutzt."
-    ).strip()
-    exchange_rate_api_key = st.text_input(
-        "ExchangeRate API Key", type="password",
-        help="Optional: Falls du einen eigenen API Key hast."
-    ).strip()
+    # Hier wird der CoinMarketCap API Key erwartet – passe das Label ggf. an
+    cmc_api_key = st.text_input("CoinMarketCap API Key", type="password",
+                                help="Gib hier deinen CoinMarketCap API Key ein (Pro-Version erforderlich für historische Daten).").strip()
+    exchange_rate_api_key = st.text_input("ExchangeRate API Key", type="password",
+                                          help="Optional: Falls du einen eigenen API Key hast.").strip()
     
     fetch_button = st.button("Daten abrufen")
 
-# Caching der API-Aufrufe mit st.cache_data
-
-def get_coingecko_base_url(api_key: str = None):
-    """
-    Gibt die Basis-URL zurück. Wird ein API Key übergeben, nutzen wir den Pro-Endpunkt.
-    """
-    if api_key:
-        return "https://pro-api.coingecko.com/api/v3"
-    else:
-        return "https://api.coingecko.com/api/v3"
-
 @st.cache_data(ttl=3600)
-def fetch_token_info(chain_id: str, contract_addr: str, api_key: str = None):
+def fetch_token_info_cmc(contract_addr: str, platform: str, cmc_api_key: str):
     """
-    Ruft Token-Informationen von CoinGecko anhand der Contract-Adresse ab.
-    Wird ein API Key übergeben, verwenden wir den Pro-Endpunkt.
+    Ruft Token-Informationen von CoinMarketCap anhand der Contract-Adresse ab.
+    Verwendet dazu den /v1/cryptocurrency/map Endpoint.
     """
-    base_url = get_coingecko_base_url(api_key)
-    url = f"{base_url}/coins/{chain_id}/contract/{contract_addr}?localization=false"
-    headers = {}
-    if api_key:
-        headers["x-cg-pro-api-key"] = api_key
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        raise Exception(
-            f"Fehler beim Abruf der Token-Informationen ({response.status_code}). "
-            f"Bitte prüfe die Contract-Adresse, die Chain und ggf. den API Key. "
-            f"Response: {response.text}"
-        )
-    return response.json()
-
-@st.cache_data(ttl=3600)
-def fetch_market_chart(coin_id: str, from_ts: int, to_ts: int, api_key: str = None):
-    """
-    Ruft historische Preisdaten von CoinGecko (in USD) für den angegebenen Zeitraum ab.
-    Optional kann ein API Key übergeben werden.
-    """
-    base_url = get_coingecko_base_url(api_key)
-    url = f"{base_url}/coins/{coin_id}/market_chart/range"
-    params = {
-        "vs_currency": "usd",
-        "from": from_ts,
-        "to": to_ts
-    }
-    headers = {}
-    if api_key:
-        headers["x-cg-pro-api-key"] = api_key
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map"
+    params = {"address": contract_addr}
+    # Optional: Filterung nach Plattform (z. B. Ethereum, Arbitrum, Optimism)
+    if platform:
+        params["platform"] = platform
+    headers = {"X-CMC_PRO_API_KEY": cmc_api_key}
     response = requests.get(url, params=params, headers=headers)
     if response.status_code != 200:
         raise Exception(
-            f"Fehler beim Abruf der Preisdaten ({response.status_code}). Response: {response.text}"
+            f"Fehler beim Abruf der Token-Informationen (CMC) ({response.status_code}). Response: {response.text}"
+        )
+    data = response.json().get("data", [])
+    if not data:
+        raise Exception("Keine Token-Informationen gefunden. Bitte prüfe die Contract-Adresse und den API Key.")
+    # Wähle den ersten Treffer (ggf. weitere Logik implementieren, wenn mehrere Ergebnisse vorliegen)
+    return data[0]
+
+@st.cache_data(ttl=3600)
+def fetch_market_chart_cmc(coin_id: int, start_dt: datetime, end_dt: datetime, cmc_api_key: str):
+    """
+    Ruft historische OHLCV-Daten (täglich) von CoinMarketCap für den angegebenen Zeitraum ab.
+    Nutzt den /v2/cryptocurrency/ohlcv/historical Endpoint.
+    """
+    url = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/ohlcv/historical"
+    params = {
+        "id": coin_id,
+        "time_start": start_dt.strftime("%Y-%m-%d"),
+        "time_end": end_dt.strftime("%Y-%m-%d"),
+        "interval": "daily"
+    }
+    headers = {"X-CMC_PRO_API_KEY": cmc_api_key}
+    response = requests.get(url, params=params, headers=headers)
+    if response.status_code != 200:
+        raise Exception(
+            f"Fehler beim Abruf der Preisdaten (CMC) ({response.status_code}). Response: {response.text}"
         )
     return response.json()
 
@@ -101,8 +89,6 @@ def fetch_market_chart(coin_id: str, from_ts: int, to_ts: int, api_key: str = No
 def fetch_exchange_rate(date_str: str, exchange_api_key: str = None):
     """
     Ruft den historischen USD/EUR Wechselkurs für ein bestimmtes Datum von exchangerate.host ab.
-    Falls ein API Key übergeben wird, wird dieser als Parameter 'access_key' mitgeschickt.
-    (Hinweis: exchangerate.host benötigt in der Regel keinen API Key.)
     """
     url = f"https://api.exchangerate.host/{date_str}"
     params = {"base": "USD", "symbols": "EUR"}
@@ -118,47 +104,46 @@ def fetch_exchange_rate(date_str: str, exchange_api_key: str = None):
 if fetch_button:
     if not contract_address:
         st.error("Bitte gib eine Token Contract-Adresse ein.")
+    elif not cmc_api_key:
+        st.error("Bitte gib einen CoinMarketCap API Key ein.")
     else:
         try:
             with st.spinner("Token-Informationen werden abgerufen..."):
-                token_info = fetch_token_info(chain_mapping[selected_chain], contract_address, coin_gecko_api_key)
+                token_info = fetch_token_info_cmc(contract_address, chain_mapping[selected_chain], cmc_api_key)
             st.success(f"Token gefunden: {token_info.get('name', 'Unbekannt')} ({token_info.get('symbol', '').upper()})")
+            
+            token_id = token_info.get("id")
+            if token_id is None:
+                raise Exception("Kein Token ID in den abgerufenen Daten gefunden.")
             
             # Definiere den Zeitraum des gesamten Jahres (UTC)
             start_dt = datetime(year, 1, 1, tzinfo=timezone.utc)
-            end_dt = datetime(year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
-            start_ts = int(start_dt.timestamp())
-            end_ts = int(end_dt.timestamp())
+            end_dt = datetime(year, 12, 31, tzinfo=timezone.utc)
             
             with st.spinner("Historische Preisdaten werden abgerufen..."):
-                market_data = fetch_market_chart(token_info["id"], start_ts, end_ts, coin_gecko_api_key)
+                market_data = fetch_market_chart_cmc(token_id, start_dt, end_dt, cmc_api_key)
             
-            if "prices" not in market_data or not market_data["prices"]:
+            # Die OHLCV-Daten werden unter market_data["data"]["quotes"] bereitgestellt
+            quotes = market_data.get("data", {}).get("quotes", [])
+            if not quotes:
                 st.error("Es wurden keine Preisdaten gefunden.")
             else:
-                # Organisiere die Preisdaten jeweils pro Tag
-                daily_points = {}  # key: 'YYYY-MM-DD', value: list of tuples (datetime, price)
-                for point in market_data["prices"]:
-                    ts, price = point
-                    dt_obj = datetime.utcfromtimestamp(ts / 1000)
-                    day_str = dt_obj.strftime("%Y-%m-%d")
-                    daily_points.setdefault(day_str, []).append((dt_obj, price))
+                # Erstelle ein Mapping: Datum (YYYY-MM-DD) -> Schlusskurs (close price in USD)
+                daily_quotes = {}
+                for record in quotes:
+                    # Beispiel: "time_close": "2025-01-01T23:59:59.000Z"
+                    date_str = record.get("time_close", "")[:10]
+                    if date_str:
+                        close_price = record.get("quote", {}).get("USD", {}).get("close", None)
+                        daily_quotes[date_str] = close_price
                 
-                # Erstelle für jeden Tag des Jahres einen Eintrag
+                # Erstelle für jeden Tag des Jahres einen Eintrag (falls keine Daten vorhanden sind, bleibt der Preis None)
                 results = []
                 current_date = date(year, 1, 1)
                 end_date_obj = date(year, 12, 31)
                 while current_date <= end_date_obj:
                     day_str = current_date.strftime("%Y-%m-%d")
-                    target_noon = datetime.combine(current_date, time(12, 0))
-                    
-                    if day_str in daily_points:
-                        # Finde den Datenpunkt, der am nächsten zur Mittagszeit liegt
-                        best_point = min(daily_points[day_str], key=lambda x: abs(x[0] - target_noon))
-                        token_price_usd = best_point[1]
-                    else:
-                        token_price_usd = None
-                    
+                    token_price_usd = daily_quotes.get(day_str, None)
                     usd_to_eur = fetch_exchange_rate(day_str, exchange_rate_api_key)
                     token_price_eur = token_price_usd * usd_to_eur if token_price_usd is not None and usd_to_eur is not None else None
                     
@@ -174,7 +159,6 @@ if fetch_button:
                 st.subheader(f"Preisdaten für {year}")
                 st.dataframe(df, use_container_width=True)
                 
-                # CSV-Download bereitstellen
                 csv_data = df.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label="CSV herunterladen",
