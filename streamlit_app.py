@@ -11,9 +11,9 @@ st.markdown(
     """
     Diese Webapp ruft für einen angegebenen Token (über Contract-Adresse) auf Ethereum bzw. unterstützten L2 Chains historische Preisdaten (USD) von CoinGecko ab,
     holt dazu den historischen USD/EUR-Kurs von exchangerate.host und berechnet den Tokenpreis in EUR.
-    
+
     Zusätzlich kannst du hier optionale API Keys eingeben, falls du eigene Keys für die verwendeten APIs besitzt.
-    
+
     Alle Daten des gewählten Jahres werden als Tabelle angezeigt und können als CSV heruntergeladen werden.
     """
 )
@@ -30,11 +30,17 @@ with st.sidebar:
     selected_chain = st.selectbox("Chain auswählen", list(chain_mapping.keys()))
     contract_address = st.text_input("Token Contract-Adresse", "").strip()
     year = st.number_input("Jahr (vollständig)", min_value=2000, max_value=2100, value=datetime.now().year, step=1)
-
+    
     st.markdown("### API Keys (optional)")
-    coin_gecko_api_key = st.text_input("CoinGecko API Key", type="password", help="Optional: Falls du einen eigenen API Key hast.")
-    exchange_rate_api_key = st.text_input("ExchangeRate API Key", type="password", help="Optional: Falls du einen eigenen API Key hast.")
-
+    coin_gecko_api_key = st.text_input(
+        "CoinGecko API Key", type="password",
+        help="Optional: Falls du einen eigenen API Key hast."
+    ).strip()
+    exchange_rate_api_key = st.text_input(
+        "ExchangeRate API Key", type="password",
+        help="Optional: Falls du einen eigenen API Key hast."
+    ).strip()
+    
     fetch_button = st.button("Daten abrufen")
 
 # Caching der API-Aufrufe mit st.cache_data
@@ -48,10 +54,14 @@ def fetch_token_info(chain_id: str, contract_addr: str, api_key: str = None):
     url = f"https://api.coingecko.com/api/v3/coins/{chain_id}/contract/{contract_addr}?localization=false"
     headers = {}
     if api_key:
-        headers["x-cg-pro-api-key"] = api_key  # für CoinGecko Pro
+        headers["x-cg-pro-api-key"] = api_key  # Für CoinGecko Pro. Falls du einen freien Account nutzt, kannst du den Key auch leer lassen.
     response = requests.get(url, headers=headers)
     if response.status_code != 200:
-        raise Exception("Fehler beim Abruf der Token-Informationen. Bitte prüfe die Contract-Adresse, die Chain und ggf. den API Key.")
+        raise Exception(
+            f"Fehler beim Abruf der Token-Informationen ({response.status_code}). "
+            f"Bitte prüfe die Contract-Adresse, die Chain und ggf. den API Key. "
+            f"Response: {response.text}"
+        )
     return response.json()
 
 @st.cache_data(ttl=3600)
@@ -71,13 +81,15 @@ def fetch_market_chart(coin_id: str, from_ts: int, to_ts: int, api_key: str = No
         headers["x-cg-pro-api-key"] = api_key
     response = requests.get(url, params=params, headers=headers)
     if response.status_code != 200:
-        raise Exception("Fehler beim Abruf der Preisdaten.")
+        raise Exception(
+            f"Fehler beim Abruf der Preisdaten ({response.status_code}). Response: {response.text}"
+        )
     return response.json()
 
 @st.cache_data(ttl=86400)
 def fetch_exchange_rate(date_str: str, exchange_api_key: str = None):
     """
-    Ruft den historischen USD/EUR Wechselkurs für ein bestimmtes Datum ab.
+    Ruft den historischen USD/EUR Wechselkurs für ein bestimmtes Datum von exchangerate.host ab.
     Falls ein API Key übergeben wird, wird dieser als Parameter 'access_key' mitgeschickt.
     (Hinweis: exchangerate.host benötigt in der Regel keinen API Key.)
     """
