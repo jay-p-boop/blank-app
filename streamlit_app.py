@@ -1,180 +1,140 @@
 import streamlit as st
+import requests
 import pandas as pd
-import yfinance as yf
-from pycoingecko import CoinGeckoAPI
-import datetime
-import json
-import os
-from pathlib import Path
-import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date, timezone, time
 
-# Initialize APIs
-cg = CoinGeckoAPI()
+st.set_page_config(page_title="Token Historical Prices", layout="wide")
 
-# Cache directory setup
-CACHE_DIR = Path("cache")
-CACHE_DIR.mkdir(exist_ok=True)
+st.title("Token Historical Prices in USD & EUR")
+st.markdown(
+    """
+    Diese Webapp ruft für einen angegebenen Token (über Contract-Adresse) auf Ethereum bzw. unterstützten L2 Chains historische Preisdaten (USD) von CoinGecko ab, holt dazu den historischen USD/EUR-Kurs von exchangerate.host und berechnet den Tokenpreis in EUR. Alle Daten des gewählten Jahres werden als Tabelle angezeigt und können als CSV heruntergeladen werden.
+    """
+)
 
-def get_cache_filepath(chain, token_address, year):
-    return CACHE_DIR / f"{chain}_{token_address}_{year}.json"
+# Mapping Chain-Auswahl zu CoinGecko-IDs
+chain_mapping = {
+    "Ethereum": "ethereum",
+    "Arbitrum": "arbitrum-one",
+    "Optimism": "optimism"
+}
 
-def save_to_cache(data, chain, token_address, year):
-    filepath = get_cache_filepath(chain, token_address, year)
-    with open(filepath, 'w') as f:
-        json.dump(data, f)
+with st.sidebar:
+    st.header("Einstellungen")
+    selected_chain = st.selectbox("Chain auswählen", list(chain_mapping.keys()))
+    contract_address = st.text_input("Token Contract-Adresse", "").strip()
+    year = st.number_input("Jahr (vollständig)", min_value=2000, max_value=2100, value=datetime.now().year, step=1)
+    fetch_button = st.button("Daten abrufen")
 
-def load_from_cache(chain, token_address, year):
-    filepath = get_cache_filepath(chain, token_address, year)
-    if filepath.exists():
-        if time.time() - filepath.stat().st_mtime < 86400:  # 24 hours
-            with open(filepath, 'r') as f:
-                return json.load(f)
-    return None
+# Caching für API-Aufrufe (TTL in Sekunden)
+@st.experimental_memo(ttl=3600)
+def fetch_token_info(chain_id: str, contract_addr: str):
+    """
+    Ruft die Token-Informationen von CoinGecko anhand der Contract-Adresse ab.
+    """
+    url = f"https://api.coingecko.com/api/v3/coins/{chain_id}/contract/{contract_addr}?localization=false"
+    response = requests.get(url)
+    if response.status_code != 200:
+        raise Exception("Fehler beim Abruf der Token-Informationen. Stelle sicher, dass die Contract-Adresse und die Chain korrekt sind.")
+    return response.json()
 
-def get_token_price_data(chain, token_address, year):
-    # Check cache first
-    cached_data = load_from_cache(chain, token_address, year)
-    if cached_data:
-        return cached_data
+@st.experimental_memo(ttl=3600)
+def fetch_market_chart(coin_id: str, from_ts: int, to_ts: int):
+    """
+    Ruft historische Preisdaten von CoinGecko (USD) für einen bestimmten Zeitraum ab.
+    """
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart/range"
+    params = {
+        "vs_currency": "usd",
+        "from": from_ts,
+        "to": to_ts
+    }
+    response = requests.get(url, params=params)
+    if response.status_code != 200:
+        raise Exception("Fehler beim Abruf der Preisdaten.")
+    return response.json()
 
-    try:
-        platform_ids = {
-            "ETH": "ethereum",
-            "Arbitrum": "arbitrum-one",
-            "Optimism": "optimistic-ethereum",
-            "Polygon": "polygon-pos"
-        }
-        
-        platform = platform_ids[chain]
-        
-        # Get daily prices for the entire year
-        daily_prices = {}
-        start_date = datetime(year, 1, 1)
-        end_date = datetime(year, 12, 31)
-        current_date = start_date
+@st.experimental_memo(ttl=86400)
+def fetch_exchange_rate(date_str: str):
+    """
+    Ruft den historischen USD/EUR Wechselkurs für ein bestimmtes Datum ab.
+    """
+    url = f"https://api.exchangerate.host/{date_str}"
+    params = {"base": "USD", "symbols": "EUR"}
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        data = response.json()
+        return data.get("rates", {}).get("EUR", None)
+    else:
+        return None
 
-        # Batch requests in 90-day chunks to avoid API limitations
-        while current_date <= end_date:
-            chunk_end = min(current_date + timedelta(days=89), end_date)
+if fetch_button:
+    if not contract_address:
+        st.error("Bitte gib eine Token Contract-Adresse ein.")
+    else:
+        try:
+            with st.spinner("Token-Informationen werden abgerufen..."):
+                token_info = fetch_token_info(chain_mapping[selected_chain], contract_address)
+            st.success(f"Token gefunden: {token_info.get('name', 'Unbekannt')} ({token_info.get('symbol', '').upper()})")
             
-            try:
-                price_data = cg.get_coin_market_chart_range_from_contract_address_by_id(
-                    id=platform,
-                    contract_address=token_address,
-                    vs_currency='usd',
-                    from_timestamp=int(current_date.timestamp()),
-                    to_timestamp=int(chunk_end.timestamp())
-                )
-
-                # Process chunk data
-                for timestamp_ms, price in price_data['prices']:
-                    date = datetime.fromtimestamp(timestamp_ms/1000).strftime('%Y-%m-%d')
-                    daily_prices[date] = price
-
-            except Exception as chunk_error:
-                st.warning(f"Could not fetch data for period {current_date.date()} to {chunk_end.date()}: {str(chunk_error)}")
+            # Erzeuge Zeitstempel für das eingegebene Jahr (UTC)
+            start_dt = datetime(year, 1, 1, tzinfo=timezone.utc)
+            end_dt = datetime(year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+            start_ts = int(start_dt.timestamp())
+            end_ts = int(end_dt.timestamp())
+            
+            with st.spinner("Historische Preisdaten werden abgerufen..."):
+                market_data = fetch_market_chart(token_info["id"], start_ts, end_ts)
+            
+            if "prices" not in market_data or not market_data["prices"]:
+                st.error("Es wurden keine Preisdaten gefunden.")
+            else:
+                # Verarbeite die Preise zu einem Dictionary pro Tag
+                daily_points = {}  # key: 'YYYY-MM-DD', value: list of tuples (datetime, price)
+                for point in market_data["prices"]:
+                    ts, price = point
+                    dt_obj = datetime.utcfromtimestamp(ts / 1000)
+                    day_str = dt_obj.strftime("%Y-%m-%d")
+                    daily_points.setdefault(day_str, []).append((dt_obj, price))
                 
-            current_date = chunk_end + timedelta(days=1)
-            time.sleep(1.5)  # Respect rate limits
-            
-        if daily_prices:
-            save_to_cache(daily_prices, chain, token_address, year)
-            return daily_prices
-        else:
-            st.error("No price data found for this token")
-            return None
-            
-    except Exception as e:
-        st.error(f"Error fetching token data: {str(e)}")
-        return None
-
-def get_eurusd_rates(year):
-    try:
-        eurusd = yf.download("EURUSD=X", 
-                            start=f"{year}-01-01", 
-                            end=f"{year}-12-31",
-                            progress=False)
-        
-        daily_rates = eurusd['Close'].to_dict()
-        return {k.strftime('%Y-%m-%d'): v for k, v in daily_rates.items()}
-    except Exception as e:
-        st.error(f"Error fetching EUR/USD rates: {str(e)}")
-        return None
-
-# Streamlit UI
-st.title("Crypto Token Price Tracker")
-
-# Input fields
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    current_year = datetime.now().year
-    year = st.selectbox("Select Year", range(2015, current_year + 1))
-
-with col2:
-    chain = st.selectbox("Select Chain", ["ETH", "Arbitrum", "Optimism", "Polygon"])
-
-with col3:
-    token_address = st.text_input("Token Address")
-
-if st.button("Get Prices"):
-    if token_address:
-        with st.spinner("Fetching data... This might take a few moments for a full year of data."):
-            # Get token prices
-            token_prices = get_token_price_data(chain, token_address, year)
-            
-            # Get EUR/USD rates
-            eurusd_rates = get_eurusd_rates(year)
-            
-            if token_prices and eurusd_rates:
-                # Create DataFrame
-                data = []
-                for date in pd.date_range(start=f"{year}-01-01", end=f"{year}-12-31"):
-                    date_str = date.strftime('%Y-%m-%d')
-                    token_usd = token_prices.get(date_str)
-                    eurusd = eurusd_rates.get(date_str)
+                # Für jeden Tag des Jahres wird ein Eintrag in der Tabelle erzeugt
+                results = []
+                current_date = date(year, 1, 1)
+                end_date_obj = date(year, 12, 31)
+                while current_date <= end_date_obj:
+                    day_str = current_date.strftime("%Y-%m-%d")
+                    target_noon = datetime.combine(current_date, time(12, 0))
                     
-                    if token_usd and eurusd:
-                        token_eur = token_usd / eurusd
-                        data.append({
-                            'Date': date_str,
-                            'Token/USD': round(token_usd, 6),
-                            'EUR/USD': round(eurusd, 4),
-                            'Token/EUR': round(token_eur, 6)
-                        })
+                    if day_str in daily_points:
+                        # Wähle den Datenpunkt, der am nächsten zum Mittag liegt
+                        best_point = min(daily_points[day_str], key=lambda x: abs(x[0] - target_noon))
+                        token_price_usd = best_point[1]
+                    else:
+                        token_price_usd = None
+                    
+                    usd_to_eur = fetch_exchange_rate(day_str)
+                    token_price_eur = token_price_usd * usd_to_eur if token_price_usd is not None and usd_to_eur is not None else None
+                    
+                    results.append({
+                        "Date": day_str,
+                        "Token Price USD": token_price_usd,
+                        "USD/EUR": usd_to_eur,
+                        "Token Price EUR": token_price_eur
+                    })
+                    current_date += timedelta(days=1)
                 
-                df = pd.DataFrame(data)
+                df = pd.DataFrame(results)
+                st.subheader(f"Preisdaten für {year}")
+                st.dataframe(df, use_container_width=True)
                 
-                # Display table
-                st.dataframe(df)
-                
-                # Download button
-                csv = df.to_csv(index=False)
+                # CSV-Download
+                csv_data = df.to_csv(index=False).encode("utf-8")
                 st.download_button(
-                    label="Download CSV",
-                    data=csv,
-                    file_name=f"token_prices_{chain}_{year}.csv",
+                    label="CSV herunterladen",
+                    data=csv_data,
+                    file_name=f"{token_info.get('symbol', 'token')}_{year}.csv",
                     mime="text/csv"
                 )
-            else:
-                st.error("Could not fetch complete data. Please try again.")
-    else:
-        st.warning("Please enter a token address")
-
-# Add some usage information
-with st.expander("Usage Instructions"):
-    st.write("""
-    1. Select the year you want to view prices for
-    2. Select the blockchain network
-    3. Enter the token contract address
-    4. Click 'Get Prices' to view the daily prices
-    5. Use the Download CSV button to export the data
-    
-    Example Token Addresses:
-    - USDC (Ethereum): 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
-    - USDT (Ethereum): 0xdAC17F958D2ee523a2206206994597C13D831ec7
-    - DAI (Ethereum): 0x6B175474E89094C44Da98b954EedeAC495271d0F
-    
-    Note: Data is cached for 24 hours to avoid API rate limits.
-    """)
+                
+        except Exception as e:
+            st.error(f"Fehler: {e}")
