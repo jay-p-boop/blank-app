@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta, date, timezone, time
 
+# Seitenkonfiguration
 st.set_page_config(page_title="Token Historical Prices", layout="wide")
 
 st.title("Token Historical Prices in USD & EUR")
@@ -12,7 +13,7 @@ st.markdown(
     """
 )
 
-# Mapping Chain-Auswahl zu CoinGecko-IDs
+# Mapping der zu unterstützenden Chains zu den entsprechenden CoinGecko-IDs
 chain_mapping = {
     "Ethereum": "ethereum",
     "Arbitrum": "arbitrum-one",
@@ -26,11 +27,11 @@ with st.sidebar:
     year = st.number_input("Jahr (vollständig)", min_value=2000, max_value=2100, value=datetime.now().year, step=1)
     fetch_button = st.button("Daten abrufen")
 
-# Caching für API-Aufrufe (TTL in Sekunden)
-@st.experimental_memo(ttl=3600)
+# Caching der API-Aufrufe (ohne TTL, da st.experimental_memo nicht verfügbar ist)
+@st.cache(show_spinner=False)
 def fetch_token_info(chain_id: str, contract_addr: str):
     """
-    Ruft die Token-Informationen von CoinGecko anhand der Contract-Adresse ab.
+    Ruft Token-Informationen von CoinGecko anhand der Contract-Adresse ab.
     """
     url = f"https://api.coingecko.com/api/v3/coins/{chain_id}/contract/{contract_addr}?localization=false"
     response = requests.get(url)
@@ -38,10 +39,10 @@ def fetch_token_info(chain_id: str, contract_addr: str):
         raise Exception("Fehler beim Abruf der Token-Informationen. Stelle sicher, dass die Contract-Adresse und die Chain korrekt sind.")
     return response.json()
 
-@st.experimental_memo(ttl=3600)
+@st.cache(show_spinner=False)
 def fetch_market_chart(coin_id: str, from_ts: int, to_ts: int):
     """
-    Ruft historische Preisdaten von CoinGecko (USD) für einen bestimmten Zeitraum ab.
+    Ruft historische Preisdaten von CoinGecko (in USD) für den angegebenen Zeitraum ab.
     """
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart/range"
     params = {
@@ -54,10 +55,10 @@ def fetch_market_chart(coin_id: str, from_ts: int, to_ts: int):
         raise Exception("Fehler beim Abruf der Preisdaten.")
     return response.json()
 
-@st.experimental_memo(ttl=86400)
+@st.cache(show_spinner=False)
 def fetch_exchange_rate(date_str: str):
     """
-    Ruft den historischen USD/EUR Wechselkurs für ein bestimmtes Datum ab.
+    Ruft den historischen USD/EUR Wechselkurs für ein bestimmtes Datum von exchangerate.host ab.
     """
     url = f"https://api.exchangerate.host/{date_str}"
     params = {"base": "USD", "symbols": "EUR"}
@@ -77,7 +78,7 @@ if fetch_button:
                 token_info = fetch_token_info(chain_mapping[selected_chain], contract_address)
             st.success(f"Token gefunden: {token_info.get('name', 'Unbekannt')} ({token_info.get('symbol', '').upper()})")
             
-            # Erzeuge Zeitstempel für das eingegebene Jahr (UTC)
+            # Definiere den Zeitraum des gesamten Jahres (UTC)
             start_dt = datetime(year, 1, 1, tzinfo=timezone.utc)
             end_dt = datetime(year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
             start_ts = int(start_dt.timestamp())
@@ -89,7 +90,7 @@ if fetch_button:
             if "prices" not in market_data or not market_data["prices"]:
                 st.error("Es wurden keine Preisdaten gefunden.")
             else:
-                # Verarbeite die Preise zu einem Dictionary pro Tag
+                # Organisiere die Preisdaten jeweils pro Tag
                 daily_points = {}  # key: 'YYYY-MM-DD', value: list of tuples (datetime, price)
                 for point in market_data["prices"]:
                     ts, price = point
@@ -97,7 +98,7 @@ if fetch_button:
                     day_str = dt_obj.strftime("%Y-%m-%d")
                     daily_points.setdefault(day_str, []).append((dt_obj, price))
                 
-                # Für jeden Tag des Jahres wird ein Eintrag in der Tabelle erzeugt
+                # Erstelle für jeden Tag des Jahres einen Eintrag
                 results = []
                 current_date = date(year, 1, 1)
                 end_date_obj = date(year, 12, 31)
@@ -106,7 +107,7 @@ if fetch_button:
                     target_noon = datetime.combine(current_date, time(12, 0))
                     
                     if day_str in daily_points:
-                        # Wähle den Datenpunkt, der am nächsten zum Mittag liegt
+                        # Finde den Datenpunkt, der am nächsten zur Mittagszeit liegt
                         best_point = min(daily_points[day_str], key=lambda x: abs(x[0] - target_noon))
                         token_price_usd = best_point[1]
                     else:
@@ -127,7 +128,7 @@ if fetch_button:
                 st.subheader(f"Preisdaten für {year}")
                 st.dataframe(df, use_container_width=True)
                 
-                # CSV-Download
+                # CSV-Download bereitstellen
                 csv_data = df.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label="CSV herunterladen",
